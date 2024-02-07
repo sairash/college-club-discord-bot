@@ -1,1 +1,6 @@
 /target
+<<<<<<< HEAD
+=======
+.shuttle-storage
+Secrets*.toml
+>>>>>>> main
