@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { useGeolocation } from '@vueuse/core'
 import axios from "axios"
 import { onMounted, ref } from 'vue';
 
@@ -14,9 +13,10 @@ function b(input: string): string {
 
 const hasCodeParam = ref(false);
 const text = ref("abc");
+const error = ref("");
+var sending_request = false;
 var codeValue = ""
 
-const { coords, error } = useGeolocation()
 
 onMounted(() => {
   const searchParams = new URLSearchParams(window.location.search);
@@ -32,35 +32,52 @@ function login_with_discord() {
   if (!hasCodeParam.value) {
     location.replace(import.meta.env.VITE_URL)
   } else {
-    alert(codeValue)
+    alert("You are Already Logged in!")
   }
 }
 
 
 async function attendance() {
-  console.log(coords.value.latitude.toString().length)
-  if (!hasCodeParam.value) {
-    alert("Login with Discord!");
+  error.value = ""
+  if(sending_request){
     return
   }
-  if (error.value != null) {
-    alert("Error with location!")
-    return
+  sending_request = true;
+  if ("geolocation" in navigator) {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        alert(latitude)
+        alert(longitude)
+        if (latitude.toString().length < 9) {
+          error.value = "Brave is not Support for this Operation!"
+          sending_request = false;
+          return
+        }
+        if (!hasCodeParam.value) {
+          alert("Login with Discord!");
+          sending_request = false;
+          return
+        }
+        axios.post("/attendance", {
+          "l": b(latitude.toString()) + "|" + b(longitude.toString()),
+          "d": b(codeValue),
+          "c": b(text.value),
+        }, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        })
+      },
+      () => {
+        error.value = "Use Another Browser";
+      }
+    );
+  } else {
+    error.value = "Use Another Browser!";
   }
-  if (coords.value.latitude.toString().length < 9) {
-    alert("Use another browser!")
-    return
-  }
-
-  axios.post("/attendance", {
-    "l":b(coords.value.latitude.toString())+"|"+b(coords.value.longitude.toString()),
-    "d": b(codeValue),
-    "c": b(text.value),
-  }, {
-    headers: {
-      'Content-Type': 'application/json'
-    }
-  })
+  sending_request = false;
 }
 </script>
 
@@ -131,16 +148,15 @@ async function attendance() {
             </div>
 
             <div class="col-span-6">
-              <input
-                v-model="text"
+              <input v-model="text"
                 class="text-lg bg-gray-200 appearance-none border-2 border-gray-200 text-center rounded w-full py-2 px-4 text-gray-700 leading-tight h-12 focus:outline-none focus:bg-white focus:border-blue-700"
                 placeholder="Enter Code" type="text">
             </div>
 
-            <div class="col-span-6 " v-if="error != null && error.PERMISSION_DENIED">
+            <div class="col-span-6 " v-if="error != ''">
               <div
                 class="text-xl text-center bg-rose-500 appearance-none  rounded py-2 px-4 text-white leading-tight rounded">
-                {{ error.message }}
+                {{ error }}
               </div>
             </div>
 
