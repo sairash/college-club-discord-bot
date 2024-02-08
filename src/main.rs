@@ -1,5 +1,7 @@
-
+use chrono::{Datelike, Utc};
 use once_cell::sync::Lazy;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serenity::all::RoleId;
 use shuttle_secrets::SecretStore;
@@ -7,7 +9,6 @@ use tokio::task;
 use tokio::time;
 use warp::Filter;
 use warp::Reply;
-
 
 use serenity::all::{ChannelId, UserId};
 use serenity::async_trait;
@@ -20,6 +21,8 @@ use serenity::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use geohash::{encode, Coord};
+
 struct Handler;
 
 #[derive(Deserialize, Serialize)]
@@ -28,6 +31,16 @@ struct MessageAtWelcome {
     author_id: String,
     content: String,
     content_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct req {
+    d: String,
+    l: String,
+    c: String,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    hash: Option<String>,
 }
 
 struct SharedArray {
@@ -55,7 +68,6 @@ impl SharedArray {
 }
 
 static SHARED_ARRAY: Lazy<SharedArray> = Lazy::new(|| SharedArray::new());
-
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -140,14 +152,39 @@ async fn serenity(secret_store: SecretStore) {
     }
 }
 
+fn gen_ran_str() -> String {
+    let today = Utc::now();
+    let seed = today.year() * 10000 + (today.month() as i32) * 100 + (today.day() as i32);
+    let mut rng = StdRng::seed_from_u64(seed as u64);
+
+    let charset: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let random_string: String = (0..10)
+        .map(|_| {
+            let idx = rng.gen_range(0..charset.len());
+            charset[idx] as char
+        })
+        .collect();
+
+    random_string
+}
+
+fn c(result: &str) -> Result<String, std::num::ParseIntError> {
+    let bytes_result: Result<Vec<u8>, _> = (0..result.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&result[i..i + 2], 16))
+        .collect();
+
+    bytes_result.map(|bytes| bytes.iter().map(|&b| (b ^ 5) as char).collect())
+}
+
 #[shuttle_runtime::main]
 async fn warp(
     #[shuttle_secrets::Secrets] secret_store: SecretStore,
 ) -> shuttle_warp::ShuttleWarp<(impl Reply,)> {
-    task::spawn(serenity(secret_store));
+    // task::spawn(serenity(secret_store));
 
-    let static_files = warp::fs::dir("frontend/dist");
-    let assets_files = warp::fs::dir("frontend/dist/assets");
+    let static_files = warp::fs::dir("src/dist");
+    let assets_files = warp::fs::dir("src/dist/assets");
 
     let route_post = warp::post()
         .and(warp::path("message"))
@@ -155,13 +192,53 @@ async fn warp(
         .and(warp::body::json())
         .and_then(|content_id, mut message: MessageAtWelcome| async move {
             message.content_id = Some(content_id);
-            println!("Count Start {:?}", SHARED_ARRAY.count());
             SHARED_ARRAY.add_element(message);
-            println!("Count End {:?}", SHARED_ARRAY.count());
             Ok::<_, warp::Rejection>(warp::reply::html("Sent"))
         })
-        .or(warp::path::end().and(static_files))
-        .or(warp::path("assets").and(assets_files));
+        .or(warp::get().and(warp::path::end().and(static_files)))
+        .or(warp::path("assets").and(assets_files))
+        .or(warp::path("time").map(|| {
+            if let Ok(res) = c("1234") {
+                return warp::reply::html(res);
+            }
+            return warp::reply::html("".to_string());
+        }))
+        .or(warp::post()
+            .and(warp::path("attendance"))
+            .and(warp::body::json())
+            .and_then(|mut request: req| async move {
+                if let Ok(x) = c(&request.c) {
+                    request.c = x;
+                }
+                if let Ok(x) = c(&request.d) {
+                    request.d = x;
+                }
+                let tokens: Vec<&str> = request.l.split('|').collect();
+
+                if let Ok(lat_str) = c(tokens[0]) { 
+                    if let Some(lat) = lat_str.parse::<f64>().ok() {
+                        request.lat = Some(lat);
+                    } else {
+                        println!("Error parsing latitude");
+                    }
+                }
+
+                if let Ok(lng_str) = c(tokens[1]) { 
+                    if let Some(lng) = lng_str.parse::<f64>().ok() {
+                        request.lng = Some(lng);
+                    } else {
+                        println!("Error parsing longitude");
+                    }
+                }
+
+                if let (Some(lat), Some(lng)) = (request.lat, request.lng) {
+                    let n_cord = Coord { x: lat, y: lng };
+                    if let Ok(hash)= encode(n_cord, 9usize){
+                        request.hash = Some(hash);
+                    }
+                }
+                Ok::<_, warp::Rejection>(warp::reply::json(&request))
+            }));
 
     Ok(route_post.boxed().into())
 }
