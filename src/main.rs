@@ -1,4 +1,5 @@
 use chrono::{Datelike, Utc};
+use mongodb::bson;
 use once_cell::sync::Lazy;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -18,10 +19,15 @@ use serenity::model::gateway::Ready;
 
 use serenity::model::id::GuildId;
 use serenity::prelude::*;
+use std::hash;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use geohash::{encode, Coord};
+
+use mongodb::{bson::{doc, Document}, error::Error};
+
+use reqwest;
 
 struct Handler;
 
@@ -43,6 +49,18 @@ struct req {
     hash: Option<String>,
 }
 
+
+#[derive(Deserialize, Serialize)]
+struct res {
+    t: i8,
+    r: String,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct User {
+    discord_id: String,
+    attendance: Vec<String>, // Assuming the attendance field stores dates as strings
+}
 struct SharedArray {
     array: Arc<Mutex<Vec<MessageAtWelcome>>>,
 }
@@ -133,6 +151,30 @@ impl EventHandler for Handler {
     }
 }
 
+// async fn get_discord_me(token: String) -> Result<String, Box<dyn std::error::Error>> {
+//     let url = "https://discord.com/api/v10/users/@me";
+
+//     let client = reqwest::Client::new();
+//     let response = client.get(url)
+//         .header("Authorization", format!("Bearer {}", token))
+//         .send()
+//         .await?;
+
+//     if response.status().is_success() {
+//         let user_data: serde_json::Value = response.json().await?;
+//         if let Some(user_id) = user_data.get("id") {
+//             return Ok(user_id as String)
+//         } else {
+//             println!("User ID not found in response.");
+//         }
+//     } else {
+//         println!("Failed to fetch user ID: {}", response.status());
+//     }
+
+//     Ok(())
+// }
+
+
 async fn serenity(secret_store: SecretStore) {
     let token = if let Some(token) = secret_store.get("DISCORD_TOKEN") {
         token
@@ -197,16 +239,14 @@ async fn warp(
         })
         .or(warp::get().and(warp::path::end().and(static_files)))
         .or(warp::path("assets").and(assets_files))
-        .or(warp::path("time").map(|| {
-            if let Ok(res) = c("1234") {
-                return warp::reply::html(res);
-            }
-            return warp::reply::html("".to_string());
+        .or(warp::path("get_time").map(|| {
+            return warp::reply::html(gen_ran_str());
         }))
         .or(warp::post()
             .and(warp::path("attendance"))
             .and(warp::body::json())
             .and_then(|mut request: req| async move {
+
                 if let Ok(x) = c(&request.c) {
                     request.c = x;
                 }
@@ -232,12 +272,37 @@ async fn warp(
                 }
 
                 if let (Some(lat), Some(lng)) = (request.lat, request.lng) {
-                    let n_cord = Coord { x: lat, y: lng };
-                    if let Ok(hash)= encode(n_cord, 9usize){
-                        request.hash = Some(hash);
+                    let n_cord = Coord { x: lng, y: lat };
+                    if let Ok(hash)= encode(n_cord, 7usize){
+                        request.hash = Some(hash.clone());
+                        if(hash == "tuutw1s" || hash == "tuutw1t" || hash == "tuutw1v" || hash == "tuutw1u" || hash == "tuutw1k" || hash == "tuutw1m"){
+                                if let Ok(client) = mongodb::Client::with_uri_str("mongodb+srv://webclub:B0m4zFTGkgvxTMfj@attendance.t5qakth.mongodb.net/?retryWrites=true&w=majority").await{
+                                let db = client.database("attendance");
+                                let collection = db.collection("users");
+                                let new_user = User {
+                                    discord_id: "new_user_id".to_string(),
+                                    attendance: vec![], 
+                                };
+                            
+                                if let Ok(user_doc) = bson::to_document(&new_user){
+                                    // Insert the new user document into the collection
+                                    match collection.insert_one(user_doc, None).await {
+                                        Ok(_) => return Ok::<_, warp::Rejection>(warp::reply::json(&res{
+                                            t: 1,
+                                            r: "Success".to_string()
+                                        })),
+                                        Err(e) => eprintln!("Error adding new user: {}", e),
+                                    }
+                                }
+                            }
+                        }
+                        // request.hash = Some(hash);
                     }
                 }
-                Ok::<_, warp::Rejection>(warp::reply::json(&request))
+                return Ok::<_, warp::Rejection>(warp::reply::json(&res{
+                    t: 0,
+                    r: "Error".to_string()
+                }))
             }));
 
     Ok(route_post.boxed().into())
