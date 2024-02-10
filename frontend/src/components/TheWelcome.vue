@@ -38,6 +38,7 @@ function login_with_discord() {
 
 
 async function attendance() {
+  console.log("Here")
   error.value = ""
   if(sending_request){
     return
